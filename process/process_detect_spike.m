@@ -140,19 +140,22 @@ function sInput = Run(sProcess, sInput)
     channel_map = get_channel_mapping(sProcess);
     donnees     =  export_and_reordered(sChannels, sInput, channel_map);
 
-
-
     eeg         = donnees.data; 
     Fs          = donnees.Fs;
     L           = round(1 * Fs);
     step        = 1;
     batch_size  = 1000;
+    
+    % Move to a tmp dir, so the model can create +spikenet1
+    currentDirectory = pwd;
+    cleanUp = onCleanup(@() cd(currentDirectory));
+    cd(bst_get('BrainstormTmpDir'));
+
 
     % Load deep learning network
-    dossierProjet = "/NAS/home/auristre/Documents/software/SpikeNet1/";
-    model_file = fullfile(dossierProjet, "model/spikenet1.onnx");
+    PlugDesc = bst_plugin('GetInstalled', 'spikenet');
+    model_file = fullfile(PlugDesc.Path,PlugDesc.SubFolder, 'models', 'spikenet1.onnx');
     net = importNetworkFromONNX(model_file, "InputDataFormats", "BCSS");
-
     %deepNetworkDesigner(net)
 
     
@@ -162,7 +165,7 @@ function sInput = Run(sProcess, sInput)
     nb_batches = ceil(length(start_ids) / batch_size);
     
     yp = [];
-    bst_progress('start', 'Spikenet1', 'Lancement des prédictions natives MATLAB (Calcul stable et propre)...', 0, nb_batches);
+    bst_progress('start', 'Spikenet1', 'Predicting spike probabilities using spikenet1...', 0, nb_batches);
     for iBatch = 1:nb_batches
         idx_start = (iBatch-1)*batch_size + 1;
         idx_end = min(iBatch*batch_size, length(start_ids));
