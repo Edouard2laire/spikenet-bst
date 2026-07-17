@@ -35,13 +35,20 @@ function sProcess = GetDescription()
     % Description the process
     sProcess.Comment     = 'Detect spike (spikenet1)';
     sProcess.FileTag     = 'spikenet';
-    sProcess.Category    = 'Filter';
+    sProcess.Category    = 'File';
     sProcess.SubGroup    = 'Events';
     sProcess.Index       = 200;
     sProcess.Description = '';
     % Definition of the input accepted by this process
-    sProcess.InputTypes  = {'raw', 'data'};
-    sProcess.OutputTypes = {'data', 'data'};
+    sProcess.InputTypes  = {'data'};
+    sProcess.OutputTypes = {'data'};
+
+    sProcess.options.model_label.Comment = '<b><u>Model</u></b>';
+    sProcess.options.model_label.Type    = 'label';
+
+
+    sProcess.options.montage_label.Comment = '<b><u>Montage</u></b>';
+    sProcess.options.montage_label.Type    = 'label';
 
     % Channel name = {'FP1','F3','C3','P3','F7','T3','T5','O1','FZ','CZ','PZ','FP2','F4','C4','P4','F8','T4','T6','O2'};
 
@@ -121,6 +128,24 @@ function sProcess = GetDescription()
     sProcess.options.channelname_O2.Type    = 'channelname';
     sProcess.options.channelname_O2.Value   = '';
 
+    sProcess.options.event_label.Comment = '<b><u>Events</u></b>';
+    sProcess.options.event_label.Type    = 'label';
+
+    sProcess.options.option_threshold.Comment = 'Threshold';
+    sProcess.options.option_threshold.Type    = 'value';
+    sProcess.options.option_threshold.Value   = {0.6, '', 2};
+
+    sProcess.options.option_event_name.Comment = 'Output event name:';
+    sProcess.options.option_event_name.Type    = 'text';
+    sProcess.options.option_event_name.Value   = 'spike';
+
+    % === OUTPUT MODE
+    sProcess.options.outputmode.Comment = 'Save model pprediction';
+    sProcess.options.outputmode.Type    = 'checkbox';
+    sProcess.options.outputmode.Value   = 1;
+    sProcess.options.outputmode.Group   = 'output';
+
+
     sProcess.nInputs     = 1;
     sProcess.nMinFiles   = 1;
 end
@@ -133,12 +158,15 @@ end
 
 
 %% ===== RUN =====
-function sInput = Run(sProcess, sInput) 
+function OutputFile = Run(sProcess, sInput) 
     
+    OutputFile = {};
+
     % Load Data
+    sData       = in_bst_data(sInput.FileName);
     sChannels   = in_bst_channel(sInput.ChannelFile);
     channel_map = get_channel_mapping(sProcess);
-    data        =  prepare_data(sChannels, sInput, channel_map);
+    [data, Fs]        =  prepare_data(sChannels, sData, channel_map);
     
     % Move to a tmp dir, so the model can create +spikenet1
     currentDirectory = pwd;
@@ -202,10 +230,41 @@ function sInput = Run(sProcess, sInput)
     ylabel('Score');
     title(['Prédiction Native MATLAB (100% OK)'], 'Interpreter', 'none');
     grid on;
+
+    %% Generate events
+
+
+    spike_time = getEvents(sData.Time, yp_final, sProcess.options.option_threshold.Value{1});
+
+    sData.Events(end+1) = db_template('Event');
+    iEvent = length(sData.Events);
     
+    sData.Events(iEvent).label = file_unique(sProcess.options.option_event_name.Value, {sData.Events.label}, 0);
+    sData.Events(iEvent).times = spike_time;
+    sData.Events(iEvent).epochs = ones(1,length(spike_time));
+    sData.Events(iEvent).color = panel_record('GetNewEventColor', 1, iEvent);
+    sData.Events(iEvent).channels = cell(1, size(sData.Events(iEvent).times, 2));
+    sData.Events(iEvent).notes = cell(1, size(sData.Events(iEvent).times, 2));
+
+    bst_save(file_fullpath(sInput.FileName), sData);
+
     % Save in Brainstorm
-    sInput.A = 100 * repmat(yp_final', size(sInput.A,1), 1);
-    sInput.DisplayUnits = '%';
+    if sProcess.options.outputmode.Value
+        % Save time-series data
+        sDataOut = sData;
+        sDataOut.F            = 100 * repmat(yp_final', size(sData.F,1), 1); 
+        sDataOut.Comment      = [sInput.Comment ' | Spikenet1'];
+        sDataOut.DisplayUnits = '%';
+        sDataOut = bst_history('add', sDataOut, 'process', 'Spikenet prediction');
+        
+        [sStudy, iStudy] = bst_get('Study', sInput.iStudy);
+        % Generate a new file name in the same folder
+        OutputFile = bst_process('GetNewFilename', bst_fileparts(sStudy.FileName), 'data_sppikenet_prediction');
+        sDataOut.FileName = file_short(OutputFile);
+        bst_save(OutputFile, sDataOut, 'v7');
+        % Register in database
+        db_add_data(iStudy, OutputFile, sDataOut);
+    end
 
 end
 
@@ -230,14 +289,12 @@ function channel_map = get_channel_mapping(sProcess)
 end
 
 
-function [data, newFile] = prepare_data(sChannels, sData, channel_map)
+function [data, Fs, channels] = prepare_data(sChannels, sData, channel_map)
     
 
-    newFile          = struct();
-    newFile.Fs       = 1/(sData.TimeVector(2) - sData.TimeVector(1));
-    newFile.channels = {sChannels.Channel.Name}' ;
-
-    assert(newFile.Fs == 128, 'Sampling rate of the data must be 128 Hz')
+    Fs               = 1/(sData.Time(2) - sData.Time(1));
+    channels         = {sChannels.Channel.Name}' ;
+    assert(Fs == 128, 'Sampling rate of the data must be 128 Hz')
 
     momopolar_channels = {'FP1','F3','C3','P3','F7','T3','T5','O1','FZ','CZ','PZ','FP2','F4','C4','P4','F8','T4','T6','O2'};
     bipolar_channels = {'FP1-F7','F7-T3','T3-T5','T5-O1','FP2-F8','F8-T4','T4-T6','T6-O2','FP1-F3','F3-C3','C3-P3','P3-O1','FP2-F4','F4-C4','C4-P4','P4-O2','FZ-CZ','CZ-PZ'};
@@ -263,9 +320,7 @@ function [data, newFile] = prepare_data(sChannels, sData, channel_map)
         return;
     end
 
-    newFile.channels    = momopolar_channels;
-    data_reordered      = sData.A(channel_order, :) * 1e6;
-
+    data_reordered      = sData.F(channel_order, :) * 1e6;
     average_data = data_reordered - mean(data_reordered, 1);
     bipolar_data = zeros(numel(bipolar_channels), size(data_reordered, 2));
 
@@ -281,6 +336,10 @@ function [data, newFile] = prepare_data(sChannels, sData, channel_map)
     end
     
     data = [average_data; bipolar_data];
-    newFile.data = [average_data; bipolar_data];
-    newFile.channels = [momopolar_channels,  bipolar_channels];
+    channels = [momopolar_channels,  bipolar_channels];
+
+end
+
+function peaks_time = getEvents(time, yp_final,threshold)
+    [~, peaks_time] = findpeaks(yp_final, time, 'MinPeakHeight', threshold);
 end
