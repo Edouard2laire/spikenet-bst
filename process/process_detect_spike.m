@@ -138,19 +138,12 @@ function sInput = Run(sProcess, sInput)
     % Load Data
     sChannels   = in_bst_channel(sInput.ChannelFile);
     channel_map = get_channel_mapping(sProcess);
-    donnees     =  export_and_reordered(sChannels, sInput, channel_map);
-
-    eeg         = donnees.data; 
-    Fs          = donnees.Fs;
-    L           = round(1 * Fs);
-    step        = 1;
-    batch_size  = 1000;
+    data        =  prepare_data(sChannels, sInput, channel_map);
     
     % Move to a tmp dir, so the model can create +spikenet1
     currentDirectory = pwd;
     cleanUp = onCleanup(@() cd(currentDirectory));
     cd(bst_get('BrainstormTmpDir'));
-
 
     % Load deep learning network
     PlugDesc = bst_plugin('GetInstalled', 'spikenet');
@@ -160,8 +153,10 @@ function sInput = Run(sProcess, sInput)
 
     
     % Start predictions
-    nb_points = size(eeg, 2);
-    start_ids = 1:step:(nb_points - L + 1); 
+    N_sample = size(data, 2);
+    batch_size  = 1000;
+    
+    start_ids = 1:1:(N_sample - 128 + 1); 
     nb_batches = ceil(length(start_ids) / batch_size);
     
     yp = [];
@@ -173,11 +168,11 @@ function sInput = Run(sProcess, sInput)
         current_batch_size = length(batch_ids);
         
        
-        X_batch = zeros(current_batch_size, L, size(eeg, 1), 1, 'single');
+        X_batch = zeros(current_batch_size, Fs, size(data, 1), 1, 'single');
         
         for i = 1:current_batch_size
             t_start = batch_ids(i);
-            fenetre = eeg(:, t_start:t_start+L-1); 
+            fenetre = data(:, t_start:t_start+Fs-1); 
             X_batch(i, :, :, 1) = single(fenetre.'); 
         end
         
@@ -194,9 +189,9 @@ function sInput = Run(sProcess, sInput)
     bst_progress('stop')
 
     %% 3. Alignement et Sauvegarde
-    padleft = floor((nb_points - length(yp)*step) / 2);
-    padright = nb_points - length(yp)*step - padleft;
-    yp_final = [zeros(padleft, 1) + yp(1); repelem(yp, step); zeros(padright, 1) + yp(end)];
+    padleft = floor((N_sample - length(yp)) / 2);
+    padright = N_sample - length(yp) - padleft;
+    yp_final = [zeros(padleft, 1) + yp(1); repelem(yp, 1); zeros(padright, 1) + yp(end)];
 
 
     %% 4. Affichage du graphique final
@@ -226,7 +221,7 @@ function channel_map = get_channel_mapping(sProcess)
 
         str_key = keys{iKey};
         str_value = options.(str_key).Value;
-        
+
         tmp = strsplit(str_key, '_');
         channel_map{iKey, 1} = tmp{2};
         channel_map{iKey, 2} = str_value;
@@ -235,7 +230,7 @@ function channel_map = get_channel_mapping(sProcess)
 end
 
 
-function newFile = export_and_reordered(sChannels, sData, channel_map)
+function [data, newFile] = prepare_data(sChannels, sData, channel_map)
     
 
     newFile          = struct();
@@ -247,14 +242,25 @@ function newFile = export_and_reordered(sChannels, sData, channel_map)
     momopolar_channels = {'FP1','F3','C3','P3','F7','T3','T5','O1','FZ','CZ','PZ','FP2','F4','C4','P4','F8','T4','T6','O2'};
     bipolar_channels = {'FP1-F7','F7-T3','T3-T5','T5-O1','FP2-F8','F8-T4','T4-T6','T6-O2','FP1-F3','F3-C3','C3-P3','P3-O1','FP2-F4','F4-C4','C4-P4','P4-O2','FZ-CZ','CZ-PZ'};
 
-    channel_order = nan(1, length(momopolar_channels));
+    channel_order   = nan(1, length(momopolar_channels));
+    not_found       = {};
 
     for iChannel = 1:length(momopolar_channels)
 
         tmp = find(strcmpi(channel_map(:,1), momopolar_channels{iChannel}));
-        target_channel = channel_map(tmp, 2);
+        target_channel = find(strcmp({sChannels.Channel.Name}, channel_map(tmp, 2)));
 
-        channel_order(iChannel) = find(strcmp({sChannels.Channel.Name}, target_channel));
+        if isempty(target_channel)
+            not_found{end+1} = momopolar_channels{iChannel};
+            continue;
+        end
+
+        channel_order(iChannel) = target_channel;
+    end
+
+    if ~isempty(not_found)
+        bst_error(sprintf('Unable to find the following channels %s', strjoin(not_found, ', ')));
+        return;
     end
 
     newFile.channels    = momopolar_channels;
@@ -273,7 +279,8 @@ function newFile = export_and_reordered(sChannels, sData, channel_map)
 
         bipolar_data(i, :) = data_reordered(idx1, :) - data_reordered(idx2, :);
     end
-
+    
+    data = [average_data; bipolar_data];
     newFile.data = [average_data; bipolar_data];
     newFile.channels = [momopolar_channels,  bipolar_channels];
 end
